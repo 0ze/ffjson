@@ -109,24 +109,57 @@ func NewInceptionMain(goCmd string, inputPath string, outputPath string, resetFi
 	}
 }
 
-func getImportName(goCmd, inputPath string) (string, error) {
+func goEnv(name string) string {
+	value, err := exec.Command("go", "env", name).Output()
+	if err != nil {
+		return ""
+	}
+	return string(bytes.TrimSuffix(value, []byte("\n")))
+}
+
+func getImportName(inputPath string) (string, error) {
 	p, err := filepath.Abs(inputPath)
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Dir(p)
 
-	// `go list dir` gives back the module name
-	// Should work for GOPATH as well as with modules
-	// Errors if no go files are found
-	cmd := exec.Command(goCmd, "list", dir)
-	b, err := cmd.Output()
-	if err == nil {
-		return string(b[:len(b)-1]), nil
+	moduleName, err := exec.Command("go", "list", "-m").Output()
+	if err == nil && len(moduleName) > 0 {
+		moduleImportName := func() string {
+			goMod := goEnv("GOMOD")
+			if len(goMod) == 0 {
+				return ""
+			}
+
+			path := filepath.Dir(string(goMod))
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return ""
+			}
+
+			stat, err := os.Stat(absPath)
+			if err != nil || !stat.IsDir() {
+				return ""
+			}
+
+			rel, err := filepath.Rel(filepath.ToSlash(absPath), dir)
+			if err != nil {
+				return ""
+			}
+
+			return string(bytes.TrimSuffix(moduleName, []byte("\n"))) + string(os.PathSeparator) + rel
+		}()
+		if len(moduleImportName) > 0 {
+			return moduleImportName, nil
+		}
 	}
 
-	gopaths := strings.Split(os.Getenv("GOPATH"), string(os.PathListSeparator))
-
+	goPath := os.Getenv("GOPATH")
+	if len(goPath) == 0 {
+		goPath = goEnv("GOPATH")
+	}
+	gopaths := strings.Split(goPath, string(os.PathListSeparator))
 	for _, path := range gopaths {
 		gpath, err := filepath.Abs(path)
 		if err != nil {
@@ -166,8 +199,9 @@ func (im *InceptionMain) renderTpl(f *os.File, t *template.Template, tc *templat
 
 func (im *InceptionMain) Generate(packageName string, si []*StructInfo, importName string) error {
 	var err error
+
 	if importName == "" {
-		importName, err = getImportName(im.goCmd, im.inputPath)
+		importName, err = getImportName(im.inputPath)
 		if err != nil {
 			return err
 		}
